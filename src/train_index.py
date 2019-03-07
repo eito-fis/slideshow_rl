@@ -15,6 +15,7 @@
 import os
 import argparse
 from tensorflow.python.lib.io import file_io
+from io import BytesIO
 
 import tensorflow as tf
 from tensorflow import keras
@@ -25,6 +26,7 @@ from tensorflow.keras.models import Sequential, Model
 import random
 import numpy as np
 from collections import deque
+from sklearn.cluster import KMeans
 
 from src.game import init, step, init_index, step_index, preprocess, play
 
@@ -99,8 +101,7 @@ def build_model():
 
     # Conv2d layers
     conv1 = keras.layers.Conv2D(10, kernel_size=(1, SAMPLE_SIZE), activation='relu')(input_matrix)
-    conv2 = keras.layers.Conv2D(10, kernel_size=(SAMPLE_SIZE, 1), activation='relu')(conv1)
-    flatten = keras.layers.Flatten()(conv2)
+    flatten = keras.layers.Flatten()(conv1)
 
     # Combine layers
     combine = keras.layers.concatenate([flatten, input_vectors])
@@ -124,7 +125,6 @@ def build_model():
     def custom_loss(y_true, y_pred):
         cross_entropy = K.sparse_categorical_crossentropy(y_true, y_pred)
         #cross_entropy = K.log(y_true * (y_true - y_pred) + (1 - y_true) * (y_true + y_pred))
-        #cross_entropy = keras.losses.binary_crossentropy(y_true, y_pred)
         #loss = reward * cross_entropy
         #cross_entropy = K.log(y_true * (y_true - y_pred) + (1 - y_true) * (y_true + y_pred))
         return K.mean(cross_entropy * reward, keepdims=True)
@@ -141,7 +141,7 @@ def build_model():
     
     return model_train, model_predict
 
-def build_frames_generator(frames, photos_generator, verbose=False):
+def build_frames_generator(frames, photos_generator, model_predict, verbose=False):
 
     def frames_generator():
         while True:
@@ -165,9 +165,9 @@ def build_frames_generator(frames, photos_generator, verbose=False):
                     _matrix_state, _vector_state = preprocess(_state)
                         
                 count = 0
-                while not _done and count < SAMPLE_SIZE * 2:
-                    _predict = model_predict_global.predict([_matrix_state, _vector_state], batch_size=1)[0]
-                    _action = np.random.choice(range(SAMPLE_SIZE), p=_predict, replacement=False)
+                while not _done and count < SAMPLE_SIZE:
+                    _predict = model_predict.predict([_matrix_state, _vector_state], batch_size=1)[0]
+                    _action = np.random.choice(range(SAMPLE_SIZE), p=_predict, replace=False)
 
                     # Take action
                     _state, _reward, _done = step_index(_state, _action)
@@ -177,7 +177,6 @@ def build_frames_generator(frames, photos_generator, verbose=False):
                     
                     # Update reward and observation
                     _matrix_state, _vector_state = preprocess(_state)
-                    total_reward += _reward
                     count += 1
 
                 # Process the rewards
@@ -199,9 +198,10 @@ def build_frames_generator(frames, photos_generator, verbose=False):
             _matrixs = np.array(_matrixs).reshape(len(_matrixs), SAMPLE_SIZE, SAMPLE_SIZE, 1)
             _vectors = np.array(_vectors)[:frames].reshape(ROLLOUT_SIZE, SAMPLE_SIZE * 2)
             _labels = np.squeeze(np.array(_labels))
-            _labels = np.squeeze(np.array(_rewards))
+            _rewards = np.squeeze(np.array(_rewards))
 
-            yield {"input_matrix": _matrixs[:frames], "input_vectors": _vectors, "reward": _rewards[:frames]}, _labels[:frames], sum(epoch_reward) / len(epoch_reward)
+            #yield {"input_matrix": _matrixs[:frames], "input_vectors": _vectors, "reward": _rewards[:frames]}, _labels[:frames], sum(epoch_reward) / len(epoch_reward)
+            yield [_matrixs[:frames], _vectors[:frames], _rewards[:frames]], _labels[:frames], sum(epoch_reward) / len(epoch_reward)
 
     return frames_generator()
 
@@ -217,13 +217,6 @@ def main(args):
     # Read photos
     photos = read_file(args.file_name)
 
-    # Build sample generator
-    sample_generator = build_sample_generator(photos, args.image_embedding, args.n_clusters, args.random)
-
-    # Build generator and dataset
-    memory, dataset = build_dataset()
-    frame_generator = build_frames_generator(ROLLOUT_SIZE, sample_generator)
-
     # Tensorflow summary writing setup
     summary_loss = tf.placeholder(dtype=tf.float32, shape=())
     summary_reward = tf.placeholder(dtype=tf.float32, shape=())
@@ -234,6 +227,16 @@ def main(args):
     with tf.Session() as sess:
         # Build models
         model_train, model_predict = build_model()
+
+        # Build sample generator
+        sample_generator = build_sample_generator(photos, args.image_embedding, args.n_clusters, args.random)
+
+        # Build frame generator
+        frame_generator = build_frames_generator(ROLLOUT_SIZE, sample_generator, model_predict)
+
+        # Build summary writer
+        summary_path = "{}/summary".format(args.log_dir)
+        summary_writer = tf.summary.FileWriter(summary_path, sess.graph)
 
         # Iterate for n_epochs 
         for e in range(args.n_epoch):
@@ -250,6 +253,10 @@ def main(args):
                 summary_writer.add_summary(summary, e)
                 save_path = "{}/model_{}.h5".format(args.log_dir, e)
                 model_train.save(save_path)
+            print("================================")
+
+        play(model_predict, sample_generator, SAMPLE_SIZE)
+
 
 
 if __name__ == '__main__':
@@ -269,11 +276,11 @@ if __name__ == '__main__':
     parser.add_argument(
         '--rollout-size',
         type=int,
-        default=5000)
+        default=500)
     parser.add_argument(
         '--learning-rate',
         type=float,
-        default=5e-3)
+        default=5e-4)
     parser.add_argument(
         '--gamma',
         type=float,

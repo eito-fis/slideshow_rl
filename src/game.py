@@ -103,7 +103,7 @@ def step_index(state, action):
     # Catch for moving to invalid slice
     if (block_vector[action] == 1 or rewards[current_i][action] == -1):
         block_vector[action] = 1
-        return state, 0, False
+        return state, -1, False
     reward = rewards[current_i, action]
     # cannot go to the current slide anymore
     rewards[current_i] = -1.
@@ -168,20 +168,21 @@ def play(model, gen, sample_size):
         _done = False
         total_reward = 0
         count = 0
-
-        while not _done and count < sample_size * 2:
+        
+        while not _done and count < sample_size:
             _predict = model.predict([_matrix_state, _vector_state], batch_size=1)[0]
-            _action = np.argmax(_predict)
-            print("==========")
+            _action = np.random.choice(range(sample_size), p=_predict, replace=False)
+            print("=" * sample_size)
             print("Action being taken: {}".format(_action))
             print("State:")
-            print(_state[0])
-            print(_state[1])
-            print(_state[2])
-            print("==========")
+            [print(l) for l in _state[0].tolist()]
+            print(_state[1].tolist())
+            print(_state[2].tolist())
             _state, _reward, _done  = step_index(_state, _action)
+            print("Action reward: {}".format(_reward))
+            print("=" * sample_size)
             _matrix_state, _vector_state = preprocess(_state)
-            total_reward += _reward
+            total_reward += 0 if _reward == -1 else _reward
             count += 1
         print("Total reward: {}".format(total_reward))
         input()
