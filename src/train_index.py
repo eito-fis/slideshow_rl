@@ -28,7 +28,7 @@ import numpy as np
 from collections import deque
 from sklearn.cluster import KMeans
 
-from src.game import init, step, init_index, step_index, preprocess, play
+from src.game import init, step, preprocess, play
 
 def read_file(file_name):
     # Read file
@@ -55,6 +55,7 @@ def read_file(file_name):
     return enc_photos
 
 def discount_rewards(r):
+    """ take 1D float array of rewards and compute discounted reward """
     r = np.array(r)
     discounted_r = np.zeros_like(r)
     running_add = 0
@@ -95,23 +96,19 @@ def build_sample_generator(enc_photos, embedding_path, n_clusters, random):
 
 def build_model():
     # Build input layers
-    input_matrix = keras.layers.Input(shape=[SAMPLE_SIZE, SAMPLE_SIZE, 1], name="input_matrix")
-    input_vectors = keras.layers.Input(shape=[SAMPLE_SIZE * 2], name="input_vectors")
+    input_matrix = keras.layers.Input(shape=[SAMPLE_SIZE, SAMPLE_SIZE, 3], name="input_matrix")
     reward = keras.layers.Input(shape=[1], name="reward")
 
     # Conv2d layers
     conv1 = keras.layers.Conv2D(10, kernel_size=(1, SAMPLE_SIZE), activation='relu')(input_matrix)
     flatten = keras.layers.Flatten()(conv1)
 
-    # Combine layers
-    combine = keras.layers.concatenate([flatten, input_vectors])
-
     # Build dense layers
-    x = keras.layers.Dense(units=1000, activation='relu', kernel_initializer='RandomNormal', name="layer_1", use_bias=False)(combine)
-    x = keras.layers.Dense(units=1000 , activation='relu', kernel_initializer='RandomNormal', name="layer_2", use_bias=False)(x)
+    x = keras.layers.Dense(units=1000, activation='relu', kernel_initializer='RandomNormal', name="layer_1", use_bias=True)(flatten)
+    x = keras.layers.Dense(units=1000 , activation='relu', kernel_initializer='RandomNormal', name="layer_2", use_bias=True)(x)
 
     # Build output layers
-    out = keras.layers.Dense(units=SAMPLE_SIZE, activation='softmax', kernel_initializer='RandomNormal', name="out")(x)
+    out = keras.layers.Dense(units=1, activation='sigmoid', kernel_initializer='RandomNormal', name="out")(x)
 
     # Build optimizer
     rms = keras.optimizers.RMSprop(lr=LEARNING_RATE)
@@ -123,7 +120,7 @@ def build_model():
 
     # Define custom loss function
     def custom_loss(y_true, y_pred):
-        cross_entropy = K.sparse_categorical_crossentropy(y_true, y_pred)
+        cross_entropy = K.binary_crossentropy(y_true, y_pred)
         #cross_entropy = K.log(y_true * (y_true - y_pred) + (1 - y_true) * (y_true + y_pred))
         #loss = reward * cross_entropy
         #cross_entropy = K.log(y_true * (y_true - y_pred) + (1 - y_true) * (y_true + y_pred))
@@ -131,13 +128,12 @@ def build_model():
         #return cross_entropy * reward
 
     # Build and compile training model
-    model_train = Model(inputs=[input_matrix, input_vectors, reward], outputs=out)
+    model_train = Model(inputs=[input_matrix, reward], outputs=out)
     #model_train.compile(loss=custom_loss, optimizer=rms, distribute=distribution)
     model_train.compile(loss=custom_loss, optimizer=rms)
 
     # Build prediction model
-    model_predict = Model(inputs=[input_matrix, input_vectors], outputs=out)
-    model_predict._make_predict_function()
+    model_predict = Model(inputs=[input_matrix], outputs=out)
     
     return model_train, model_predict
 
@@ -145,63 +141,83 @@ def build_frames_generator(frames, photos_generator, model_predict, verbose=Fals
 
     def frames_generator():
         while True:
-            # Play games until we have the amount of frames we want
+            # Set metrics collection
             epoch_memory = []
             epoch_reward = []
+            epoch_intrest = []
+            epoch_predict = []
+            # Play games until we have the amount of frames we want
             while len(epoch_memory) < frames:
                 # Generate new game
                 sample_photos = next(photos_generator)
 
                 # init game
-                _state = init_index(sample_photos)
-                _matrix_state, _vector_state = preprocess(_state)
+                _state = init(sample_photos)
+                _matrix_state  = preprocess(_state)
                 game_memory = []
                 _done = False
 
                 # While there are no rewards in our sample, reroll
-                while (np.amax(_matrix_state) == 0):
+                while (np.amax(_matrix_state[:, :, :, 0]) == 0):
                     sample_photos = next(photos_generator)
-                    _state = init_index(sample_photos)
-                    _matrix_state, _vector_state = preprocess(_state)
+                    _state = init(sample_photos)
+                    _matrix_state  = preprocess(_state)
                         
                 count = 0
-                while not _done and count < SAMPLE_SIZE:
-                    _predict = model_predict.predict([_matrix_state, _vector_state], batch_size=1)[0]
-                    _action = np.random.choice(range(SAMPLE_SIZE), p=_predict, replace=False)
+                while not _done and count < SAMPLE_SIZE ** 2 * 2:
+                    _predict = model_predict.predict([_matrix_state], batch_size=1)[0, 0]
+                    epoch_predict.append(_predict)
+                    #print("Model proabilities: {}".format(_predict))
+                    _action = np.random.choice([True, False], p=[_predict, 1 - _predict], replace=False)
 
                     # Take action
-                    _state, _reward, _done = step_index(_state, _action)
+                    _state, _reward, _done = step(_state, _action)
 
                     # Log information
-                    game_memory.append((_matrix_state, _vector_state, _reward, _action))
+                    game_memory.append((_matrix_state, _reward, _action))
                     
                     # Update reward and observation
-                    _matrix_state, _vector_state = preprocess(_state)
+                    _matrix_state  = preprocess(_state)
                     count += 1
 
                 # Process the rewards
-                _m_s, _v_s, _rewards, _labels = zip(*game_memory)
+                _m_s, _rewards, _labels = zip(*game_memory)
                 _prwd = np.array(discount_rewards(_rewards))
-                _prwd -= _prwd.mean()
-                _std = _prwd.std()
-                _prwd /= _std if _std > 0 else 1
+                #_prwd -= _prwd.mean()
+                #_std = _prwd.std()
+                #_prwd /= _std if _std > 0 else 1
 
                 # Save the gamestates, rewards and actions
                 epoch_reward.append(sum(_rewards))
-                epoch_memory.extend(zip(_m_s, _v_s, _prwd, _labels))
+                epoch_intrest.append(sum([r for r in _rewards if r != -1]))
+                epoch_memory.extend(zip(_m_s, _prwd, _labels))
 
             # Shuffle and return frames
+            '''
+            for triple in epoch_memory:
+                _state, _reward, _action = triple
+                [print(l) for l in _state[:, :, :, 0].tolist()[0]]
+                print()
+                [print(l) for l in _state[:, :, :, 1].tolist()[0]]
+                print()
+                [print(l) for l in _state[:, :, :, 2].tolist()[0]]
+                print("Action: {}\nReward: {}".format(_action, _reward))
+                print("=" * 20)
+                input()
+            '''
             epoch_memory = [tuple(ex) for ex in np.array(epoch_memory)[np.random.permutation(len(epoch_memory))]]
-            _matrixs, _vectors, _rewards, _labels = zip(*epoch_memory)
+            _matrixs, _rewards, _labels = zip(*epoch_memory)
 
             # Cut returning arrays down to frames length to give a costant expected shape for tensors
-            _matrixs = np.array(_matrixs).reshape(len(_matrixs), SAMPLE_SIZE, SAMPLE_SIZE, 1)
-            _vectors = np.array(_vectors)[:frames].reshape(ROLLOUT_SIZE, SAMPLE_SIZE * 2)
+            _matrixs = np.array(_matrixs).reshape(len(_matrixs), SAMPLE_SIZE, SAMPLE_SIZE, 3)
             _labels = np.squeeze(np.array(_labels))
             _rewards = np.squeeze(np.array(_rewards))
 
             #yield {"input_matrix": _matrixs[:frames], "input_vectors": _vectors, "reward": _rewards[:frames]}, _labels[:frames], sum(epoch_reward) / len(epoch_reward)
-            yield [_matrixs[:frames], _vectors[:frames], _rewards[:frames]], _labels[:frames], sum(epoch_reward) / len(epoch_reward)
+            yield [_matrixs[:frames], _rewards[:frames]], _labels[:frames], \
+                    sum(epoch_reward) / len(epoch_reward), \
+                    sum(epoch_predict) / len(epoch_predict), \
+                    sum(epoch_intrest) / len(epoch_intrest)
 
     return frames_generator()
 
@@ -220,8 +236,12 @@ def main(args):
     # Tensorflow summary writing setup
     summary_loss = tf.placeholder(dtype=tf.float32, shape=())
     summary_reward = tf.placeholder(dtype=tf.float32, shape=())
+    summary_prediction = tf.placeholder(dtype=tf.float32, shape=())
+    summary_intrest = tf.placeholder(dtype=tf.float32, shape=())
     tf.summary.scalar('loss', summary_loss)
     tf.summary.scalar('reward', summary_reward)
+    tf.summary.scalar('prediction', summary_prediction)
+    tf.summary.scalar('intrest', summary_intrest)
     merged_summaries = tf.summary.merge_all()
 
     with tf.Session() as sess:
@@ -242,15 +262,19 @@ def main(args):
         for e in range(args.n_epoch):
             # Play the games and generate the frames
             print("Generating data...")
-            features, targets, average_batch_reward = next(frame_generator)
+            features, targets, average_reward, average_prediction, average_intrest = next(frame_generator)
 
             #Train!
             print("Training...")
             loss = model_train.train_on_batch(features, targets)
-            print("Epoch {}:\nLoss = {}\nAverage Reward = {}".format(e, loss, average_batch_reward))
+            print("Epoch {}:\nLoss = {}\nAverage Prediction = {}\nAverage Reward = {}\nAverage Intrest = {}".format(e, loss, average_prediction, average_reward, average_intrest))
             if e % args.save_checkpoint_steps:
-                summary = sess.run(merged_summaries, feed_dict={summary_loss: loss, summary_reward: average_batch_reward})
+                # Write scalar summaries
+                feed_dict = {summary_loss: loss, summary_reward: average_reward, summary_prediction: average_prediction, summary_intrest: average_intrest}
+                summary = sess.run(merged_summaries, feed_dict=feed_dict)
                 summary_writer.add_summary(summary, e)
+
+                # Save model
                 save_path = "{}/model_{}.h5".format(args.log_dir, e)
                 model_train.save(save_path)
             print("================================")
@@ -268,11 +292,11 @@ if __name__ == '__main__':
     parser.add_argument(
         '--n-clusters',
         type=int,
-        default=25)
+        default=50)
     parser.add_argument(
         '--sample-size',
         type=int,
-        default=20)
+        default=10)
     parser.add_argument(
         '--rollout-size',
         type=int,
@@ -284,7 +308,7 @@ if __name__ == '__main__':
     parser.add_argument(
         '--gamma',
         type=float,
-        default=0.9)
+        default=0.99)
 
     parser.add_argument(
         '--period',
