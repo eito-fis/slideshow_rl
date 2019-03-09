@@ -100,12 +100,17 @@ def build_model():
     reward = keras.layers.Input(shape=[1], name="reward")
 
     # Conv2d layers
-    conv1 = keras.layers.Conv2D(10, kernel_size=(1, SAMPLE_SIZE), activation='relu')(input_matrix)
-    flatten = keras.layers.Flatten()(conv1)
+    prev = input_matrix
+    for _ in range(NUM_CONVS):
+        conv = keras.layers.Conv2D(FILTERS, kernel_size=(1, SAMPLE_SIZE * KERNAL_MULT), activation='relu', padding=PADDING)(prev)
+        prev = conv
+    flatten = keras.layers.Flatten()(conv)
 
     # Build dense layers
-    x = keras.layers.Dense(units=1000, activation='relu', kernel_initializer='RandomNormal', name="layer_1", use_bias=True)(flatten)
-    x = keras.layers.Dense(units=1000 , activation='relu', kernel_initializer='RandomNormal', name="layer_2", use_bias=True)(x)
+    prev = flatten
+    for width in LAYERS:
+        x = keras.layers.Dense(units=width, activation='relu', kernel_initializer='RandomNormal', use_bias=True)(prev)
+        prev = x
 
     # Build output layers
     out = keras.layers.Dense(units=1, activation='sigmoid', kernel_initializer='RandomNormal', name="out")(x)
@@ -124,13 +129,14 @@ def build_model():
         #cross_entropy = K.log(y_true * (y_true - y_pred) + (1 - y_true) * (y_true + y_pred))
         #loss = reward * cross_entropy
         #cross_entropy = K.log(y_true * (y_true - y_pred) + (1 - y_true) * (y_true + y_pred))
-        return K.mean(cross_entropy * reward, keepdims=True)
+        return K.abs(K.mean(cross_entropy * reward, keepdims=True))
         #return cross_entropy * reward
 
     # Build and compile training model
     model_train = Model(inputs=[input_matrix, reward], outputs=out)
     #model_train.compile(loss=custom_loss, optimizer=rms, distribute=distribution)
     model_train.compile(loss=custom_loss, optimizer=rms)
+    model_train.summary()
 
     # Build prediction model
     model_predict = Model(inputs=[input_matrix], outputs=out)
@@ -171,7 +177,7 @@ def build_frames_generator(frames, photos_generator, model_predict, verbose=Fals
                     _action = np.random.choice([True, False], p=[_predict, 1 - _predict], replace=False)
 
                     # Take action
-                    _state, _reward, _done = step(_state, _action)
+                    _state, _reward, _done = step(_state, _action, NEGATIVE_REWARD)
 
                     # Log information
                     game_memory.append((_matrix_state, _reward, _action))
@@ -193,18 +199,6 @@ def build_frames_generator(frames, photos_generator, model_predict, verbose=Fals
                 epoch_memory.extend(zip(_m_s, _prwd, _labels))
 
             # Shuffle and return frames
-            '''
-            for triple in epoch_memory:
-                _state, _reward, _action = triple
-                [print(l) for l in _state[:, :, :, 0].tolist()[0]]
-                print()
-                [print(l) for l in _state[:, :, :, 1].tolist()[0]]
-                print()
-                [print(l) for l in _state[:, :, :, 2].tolist()[0]]
-                print("Action: {}\nReward: {}".format(_action, _reward))
-                print("=" * 20)
-                input()
-            '''
             epoch_memory = [tuple(ex) for ex in np.array(epoch_memory)[np.random.permutation(len(epoch_memory))]]
             _matrixs, _rewards, _labels = zip(*epoch_memory)
 
@@ -223,12 +217,23 @@ def build_frames_generator(frames, photos_generator, model_predict, verbose=Fals
 
 def main(args):
     # Init globals
-    global ROLLOUT_SIZE, LEARNING_RATE, OBSERVATION_DIM, GAMMA, SAMPLE_SIZE, MEMORY_SIZE
+    global ROLLOUT_SIZE, LEARNING_RATE, OBSERVATION_DIM, GAMMA, SAMPLE_SIZE, MEMORY_SIZE, NEGATIVE_REWARD, LAYERS, FILTERS, PADDING, NUM_CONVS, KERNAL_MULT
 
+    # Training variables
     LEARNING_RATE = args.learning_rate
     GAMMA = args.gamma
     SAMPLE_SIZE = args.sample_size
     ROLLOUT_SIZE = args.rollout_size
+    NEGATIVE_REWARD = args.negative_reward
+
+    # Dense layer variables
+    LAYERS = [int(neurons) for neurons in args.layers.split(',')]
+
+    # Conv variables
+    FILTERS = args.filters
+    PADDING = args.padding
+    NUM_CONVS = args.n_conv
+    KERNAL_MULT = args.kernal_size_mult
 
     # Read photos
     photos = read_file(args.file_name)
@@ -275,16 +280,19 @@ def main(args):
                 summary_writer.add_summary(summary, e)
 
                 # Save model
-                save_path = "{}/model_{}.h5".format(args.log_dir, e)
-                model_train.save(save_path)
+                save_path_train = "{}/model_train{}.h5".format(args.log_dir, e)
+                save_path_predict = "{}/model_predict{}.h5".format(args.log_dir, e)
+                model_train.save(save_path_train)
+                model_predict.save(save_path_predict)
             print("================================")
 
-        play(model_predict, sample_generator, SAMPLE_SIZE)
+        play(model_predict, sample_generator, SAMPLE_SIZE, NEGATIVE_REWARD)
 
 
 
 if __name__ == '__main__':
-    parser = argparse.ArgumentParser('pizza cutter trainer')
+    parser = argparse.ArgumentParser('slideshow rl')
+    # Hyperparameter arguments
     parser.add_argument(
         '--n-epoch',
         type=int,
@@ -309,16 +317,46 @@ if __name__ == '__main__':
         '--gamma',
         type=float,
         default=0.99)
-
     parser.add_argument(
-        '--period',
+        '--negative-reward',
+        type=float,
+        default=-1)
+
+    # Conv arguments
+    parser.add_argument(
+        '--filters',
         type=int,
-        default=5)
+        default=10)
+    parser.add_argument(
+        '--padding',
+        type=str,
+        default='same')
+    parser.add_argument(
+        '--n-conv',
+        type=int,
+        default=1)
+    parser.add_argument(
+        '--kernal-size-mult',
+        type=int,
+        default=1)
+
+    # Comma seperated string detailing the topology of our dense layers
+    parser.add_argument(
+        '--layers',
+        type=str,
+        default="1000,1000")
+
+    # Saving arguments
     parser.add_argument(
         '--save-checkpoint-steps',
         type=int,
         default=10)
+    parser.add_argument(
+        '--restore',
+        type=str,
+        default=None)
 
+    # Input data arguments
     parser.add_argument(
         '--file-name',
         type=str,
@@ -334,12 +372,9 @@ if __name__ == '__main__':
     parser.add_argument(
         '--job-dir',
         type=str,
-        default='/tmp/pizza_output')
+        default='/tmp/slideshow_rl')
 
-    parser.add_argument(
-        '--restore',
-        type=str,
-        default=None)
+    # Mode arguments
     parser.add_argument(
         '--play',
         default=False,

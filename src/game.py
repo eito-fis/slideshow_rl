@@ -30,7 +30,7 @@ def init(slides):
     state = (rewards, current_matrix, considering_matrix)
     return state
 
-def step(state, action):
+def step(state, action, negative_reward=-1):
     rewards, current_matrix, considering_matrix = state
 
     current_i = np.argmax(current_matrix) % len(current_matrix)
@@ -42,7 +42,7 @@ def step(state, action):
         reward = rewards[current_i, considering_i]
 
         # Penalize picking a square with no reward
-        if reward == 0: reward = -1
+        if reward == 0: reward = negative_reward
 
         # cannot go to the current slide anymore
         rewards[current_i] = -1.
@@ -120,7 +120,7 @@ def preprocess(_state):
     
     return matrix
 
-def play(model, gen, sample_size):
+def play(model, gen, sample_size, negative_reward):
     while True:
         print("==========STARTING ROLLOUT==========")
         sample_photos = next(gen)
@@ -145,12 +145,12 @@ def play(model, gen, sample_size):
             [print(l) for l in _state[1].tolist()]
             print()
             [print(l) for l in _state[2].tolist()]
-            _state, _reward, _done  = step(_state, _action)
+            _state, _reward, _done  = step(_state, _action, negative_reward)
             _matrix_state  = preprocess(_state)
             print("Reward: {}".format(_reward))
             print("==========")
             total_reward += _reward
-            if _reward > 0: total_inrest += _reward
+            if _reward > 0: total_intrest += _reward
             count += 1
         print("Total reward: {}".format(total_reward))
         print("Total intrest: {}".format(total_intrest))
