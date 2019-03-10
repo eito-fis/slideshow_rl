@@ -117,24 +117,14 @@ def build_model():
 
     # Build optimizer
     rms = keras.optimizers.RMSprop(lr=LEARNING_RATE)
-    #rms = tf.train.RMSPropOptimizer(learning_rate=LEARNING_RATE)
-    #rms = keras.optimizers.Adam(lr=LEARNING_RATE)
-
-    # Build distribution stratedgy
-    #distribution = tf.contrib.distribute.MirroredStrategy()
 
     # Define custom loss function
     def custom_loss(y_true, y_pred):
         cross_entropy = K.binary_crossentropy(y_true, y_pred)
-        #cross_entropy = K.log(y_true * (y_true - y_pred) + (1 - y_true) * (y_true + y_pred))
-        #loss = reward * cross_entropy
-        #cross_entropy = K.log(y_true * (y_true - y_pred) + (1 - y_true) * (y_true + y_pred))
-        return K.abs(K.mean(cross_entropy * reward, keepdims=True))
-        #return cross_entropy * reward
+        return K.mean(cross_entropy * reward, keepdims=True)
 
     # Build and compile training model
     model_train = Model(inputs=[input_matrix, reward], outputs=out)
-    #model_train.compile(loss=custom_loss, optimizer=rms, distribute=distribution)
     model_train.compile(loss=custom_loss, optimizer=rms)
     model_train.summary()
 
