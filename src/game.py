@@ -56,9 +56,9 @@ def step(state, action, negative_reward=-1):
         considering_matrix[current_i, considering_i] = 0
         
         current_i = considering_i
-        # Done if all rewards in the row we move to our negative one
+        # Done if all rewards in the row we move to our negative one or if there is no reward left
         # Otherwise, move our considering location to the first -1 slide
-        if all(r == -1 for r in rewards[current_i]):
+        if all(r == -1 for r in rewards[current_i]) or np.amax(rewards) == 0:
             done = True
         else:
             while rewards[current_i][considering_i] == -1:
@@ -67,7 +67,7 @@ def step(state, action, negative_reward=-1):
             done = False
 
         state = (rewards, current_matrix, considering_matrix)
-        return state, reward, done
+        return state, reward, done, current_i
     else:
         # If no to considering slide
 
@@ -83,11 +83,20 @@ def step(state, action, negative_reward=-1):
         # Done if we've looped through all of our considerations
         done = True if considering_i == current_i else False
 
-        # Reward for hitting no
-        reward = 0
+        # If we're done and haven't moved from the first image, impose a negative reward
+        # This is for larger sample sizes that start out with largely negative rewards.
+        # Hitting only next gives 0 reward, so when the matrix is hard to solve and reward is negative, its much easier to learn to only hit
+            # next then it is to actually learn to solve the matix.
+        # Additionaly, if the network is only hitting next and getting 0 reward, it stops learning.
+        # The hope is that by adding a negative reward to only hitting next for an entire game, we can encourage learning to solve the matrix,
+            # and possibly escape that local minimum
+        if done and current_i == 0:
+            reward = -2
+        else:
+            reward = 0
 
         state = (rewards, current_matrix, considering_matrix)
-        return state, reward, done
+        return state, reward, done, None
 
 def render(state, reward=None, done=None):
     render_format = \
@@ -145,7 +154,7 @@ def play(model, gen, sample_size, negative_reward):
             [print(l) for l in _state[1].tolist()]
             print()
             [print(l) for l in _state[2].tolist()]
-            _state, _reward, _done  = step(_state, _action, negative_reward)
+            _state, _reward, _done, _  = step(_state, _action, negative_reward)
             _matrix_state  = preprocess(_state)
             print("Reward: {}".format(_reward))
             print("==========")
@@ -155,26 +164,3 @@ def play(model, gen, sample_size, negative_reward):
         print("Total reward: {}".format(total_reward))
         print("Total intrest: {}".format(total_intrest))
         input()
-
-if __name__ == '__main__':
-
-    slides = [{0,1,2},{3,4,5},{5,0}]
-    state = init(slides)
-    render(state)
-
-    # starts from first slide because assumes that the slides are shuffled
-    slideshow = [0]
-    total_reward = 0
-
-    done = False
-    while not done:
-        go = np.random.choice([True,False])
-        state,reward,done,added_slide_i = step(state, go)
-
-        total_reward += reward
-        if added_slide_i is not None: slideshow.append(added_slide_i)
-
-        render(state,reward=reward,done=done)
-
-    print('Slideshow: {}'.format(slideshow))
-    print('Reward: {}'.format(total_reward))

@@ -167,7 +167,7 @@ def build_frames_generator(frames, photos_generator, model_predict, verbose=Fals
                     _action = np.random.choice([True, False], p=[_predict, 1 - _predict], replace=False)
 
                     # Take action
-                    _state, _reward, _done = step(_state, _action, NEGATIVE_REWARD)
+                    _state, _reward, _done, _ = step(_state, _action, NEGATIVE_REWARD)
 
                     # Log information
                     game_memory.append((_matrix_state, _reward, _action))
@@ -185,7 +185,7 @@ def build_frames_generator(frames, photos_generator, model_predict, verbose=Fals
 
                 # Save the gamestates, rewards and actions
                 epoch_reward.append(sum(_rewards))
-                epoch_intrest.append(sum([r for r in _rewards if r != -1]))
+                epoch_intrest.append(sum([r for r in _rewards if r > 0]))
                 epoch_memory.extend(zip(_m_s, _prwd, _labels))
 
             # Shuffle and return frames
